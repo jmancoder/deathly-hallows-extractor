@@ -10,7 +10,7 @@ from typing import NamedTuple
 
 class ArchiveEntry(NamedTuple):
     string: str
-    chunk_string: str
+    child_chunk_id: int
     payload_size: int
     flags: int
     header_size: int
@@ -22,14 +22,16 @@ class ArchiveEntry(NamedTuple):
 
 
 class Chunk(NamedTuple):
+    header_payload: bytes
     payload: bytes
-    child_string: str
+    child_id: int
 
 
 class Asset(NamedTuple):
+    initial_payload: bytes
     category: str
     path: Path
-    child_string: int
+    chunk_id: int
 
 
 class ArchiveReader:
@@ -40,7 +42,7 @@ class ArchiveReader:
         self.property_strings: list[str] = []
         self.entries: list[ArchiveEntry] = []
         self.assets: list[Asset] = []
-        self.chunk_map: dict[str, Chunk] = {}
+        self.chunk_map: dict[int, Chunk] = {}
     
     def read_string(self, offset_limit: int) -> str:
         out_chars = []
@@ -66,20 +68,19 @@ class ArchiveReader:
         self.bs.seek(padding, 1)
 
         entry_category, entry_path = entry.string.split(":")
-
-        if entry_category == "MSH":
-            print(payload_start, entry)
-            print()
-
         if entry_category == self.archive_name:
-            self.chunk_map[int(entry_path)] = Chunk(payload, entry.chunk_id)
-        elif entry.chunk_id != -1:
-            # Read asset
-            self.assets.append(Asset(entry_category,
-                Path(entry_path), entry.chunk_id))
+            self.chunk_map[int(entry_path)] = Chunk(
+                header,
+                payload,
+                entry.child_chunk_id
+            )
         else:
-            pass
-            #print("Uncategorized:", entry)
+            self.assets.append(Asset(
+                payload,
+                entry_category,
+                Path(entry_path),
+                entry.child_chunk_id,
+            ))
 
 
     def load_archive(self, name: str, data: bytes) -> None:
@@ -108,18 +109,22 @@ class ArchiveReader:
             if string_id >= 0:
                 entry_string = self.string_map[string_id]
             else:
-                entry_string = ""
+                raise ValueError("Entry string ID cannot be negative")
 
+            # Retrieve entry chunk ID
             chunk_string_id = self.read_int32()
             if chunk_string_id >= 0:
                 chunk_string = self.string_map[chunk_string_id]
-                chunk_id = int(chunk_string.split(":")[1])
+                chunk_category, chunk_id_string = chunk_string.split(":")
+                if chunk_category != self.archive_name:
+                    raise ValueError("Non-chunk child entries are not supported")
+                child_chunk_id = int(chunk_id_string)
             else:
-                chunk_id = -1
+                child_chunk_id = -1
 
             self.entries.append(ArchiveEntry(
                 entry_string,
-                chunk_id,
+                child_chunk_id,
                 *struct.unpack("<8i", self.bs.read(32))
             ))
 
@@ -142,28 +147,35 @@ class ArchiveReader:
 
     def extract_assets(self, out_dir: Path) -> None:
         for asset in self.assets:
-            out_name = f"{asset.category}_{asset.path.name}"
-            out_path = out_dir / asset.path.parent / out_name
-            os.makedirs(out_path.parent, exist_ok=True)
+            asset_ext = "".join(asset.path.suffixes)
+            asset_dir = out_dir / asset.path.parent
+            os.makedirs(asset_dir, exist_ok=True)
 
-            with open(out_path, "wb") as f:
-                # Parse chunks and chunk redirectors additively
-                # This is a stupid idea and will probably not work
-                # cur_chunk = self.chunk_map[asset.chunk_id]
-                # for i in range(REDIRECT_LIMIT):
-                #     if cur_chunk.child_chunk_id == -1:
-                #         f.write(cur_chunk.payload)
-                #         break
-                #     else:
-                #         # Skip payload of first redirector?
-                #         if i > 0:
-                #             f.write(cur_chunk.payload)
-                #         cur_chunk = self.chunk_map[cur_chunk.child_chunk_id]
-                # else:
-                #     print("Warning: Redirect limit reached.")
+            # Write inital payload if present
+            if asset.initial_payload:
+                out_info_name = f"{asset.category}_{asset.path.stem}_initial{asset_ext}"
+                with open(asset_dir / out_info_name, "wb") as f:
+                    f.write(asset.initial_payload)
 
-                # Write a single chunk for now, ignoring its child ID
-                f.write(self.chunk_map[asset.chunk_id].payload)
+            i = 0
+            chunk_id = asset.chunk_id
+            while chunk_id != -1:
+                chunk = self.chunk_map[chunk_id]
+                
+                # Write chunk header if present
+                if chunk.header_payload:
+                    out_chunk_header_name = f"{asset.category}_" \
+                        f"{asset.path.stem}_chunk_header{i}{asset_ext}"
+                    with open(asset_dir / out_chunk_header_name, "wb") as f:
+                        f.write(chunk.header_payload)
+
+                # Write chunk payload
+                out_chunk_name = f"{asset.category}_{asset.path.stem}_chunk_{i}{asset_ext}"
+                with open(asset_dir / out_chunk_name, "wb") as f:
+                    f.write(chunk.payload)
+
+                chunk_id = chunk.child_id
+                i += 1
 
 def main():
     parser = argparse.ArgumentParser()

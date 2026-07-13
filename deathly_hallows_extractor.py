@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import struct
 import zlib
@@ -22,15 +23,18 @@ class ArchiveEntry(NamedTuple):
 
 
 class Chunk(NamedTuple):
-    header_payload: bytes
-    payload: bytes
+    header_off: int
+    header_size: int
+    payload_off: int
+    payload_size: int
     child_id: int
 
 
 class Asset(NamedTuple):
-    initial_payload: bytes
+    payload_off: int
+    payload_size: int
     category: str
-    path: Path
+    path: str
     chunk_id: int
 
 
@@ -61,24 +65,30 @@ class ArchiveReader:
         return struct.unpack("<I", self.bs.read(4))[0]
 
     def read_entry_payload(self, entry: ArchiveEntry) -> None:
-        payload_start = self.bs.tell()
-        header = self.bs.read(entry.header_size)
-        payload = self.bs.read(entry.payload_size)
+        header_off = self.bs.tell()
+        self.bs.seek(entry.header_size, 1)
+        
+        payload_off = self.bs.tell()
+        self.bs.seek(entry.payload_size, 1)
+
         padding = (((entry.payload_size + 15) // 16) * 16) - entry.payload_size
         self.bs.seek(padding, 1)
 
         entry_category, entry_path = entry.string.split(":")
         if entry_category == self.archive_name:
             self.chunk_map[int(entry_path)] = Chunk(
-                header,
-                payload,
+                header_off,
+                entry.header_size,
+                payload_off,
+                entry.payload_size,
                 entry.child_chunk_id
             )
         else:
             self.assets.append(Asset(
-                payload,
+                payload_off,
+                entry.payload_size,
                 entry_category,
-                Path(entry_path),
+                entry_path,
                 entry.child_chunk_id,
             ))
 
@@ -145,37 +155,66 @@ class ArchiveReader:
             self.read_entry_payload(entry)
 
 
-    def extract_assets(self, out_dir: Path) -> None:
+    def export_manifest(self, out_dir: Path) -> None:
+        manifest: dict = {}
+        manifest["string_map"] = self.string_map
+        manifest["properties"] = self.property_strings
+        manifest["assets"] = self.assets
+        manifest["chunks"] = self.chunk_map
+
+        with open(out_dir / f"manifest.json", "w") as f:
+            json.dump(manifest, f, indent=4)
+
+
+    def export_assets(self, out_dir: Path) -> None:
+        written_chunk_ids: list[int] = []
         for asset in self.assets:
-            asset_ext = "".join(asset.path.suffixes)
-            asset_dir = out_dir / asset.path.parent
+            stored_path = Path(asset.path)
+            asset_ext = "".join(stored_path.suffixes)
+            asset_dir = out_dir / stored_path.parent
             os.makedirs(asset_dir, exist_ok=True)
 
-            # Write inital payload if present
-            if asset.initial_payload:
-                out_info_name = f"{asset.category}_{asset.path.stem}_initial{asset_ext}"
+            # Export inital payload if present
+            if asset.payload_size > 0:
+                out_info_name = f"{asset.category}_{stored_path.stem}_initial{asset_ext}"
                 with open(asset_dir / out_info_name, "wb") as f:
-                    f.write(asset.initial_payload)
+                    self.bs.seek(asset.payload_off)
+                    f.write(self.bs.read(asset.payload_size))
 
             i = 0
             chunk_id = asset.chunk_id
             while chunk_id != -1:
                 chunk = self.chunk_map[chunk_id]
+                written_chunk_ids.append(chunk_id)
                 
-                # Write chunk header if present
-                if chunk.header_payload:
+                # Export chunk header if present
+                if chunk.header_size > 0:
                     out_chunk_header_name = f"{asset.category}_" \
-                        f"{asset.path.stem}_chunk_header{i}{asset_ext}"
+                        f"{stored_path.stem}_chunk_{i}_header{asset_ext}"
                     with open(asset_dir / out_chunk_header_name, "wb") as f:
-                        f.write(chunk.header_payload)
+                        self.bs.seek(chunk.header_off)
+                        f.write(self.bs.read(chunk.header_size))
 
-                # Write chunk payload
-                out_chunk_name = f"{asset.category}_{asset.path.stem}_chunk_{i}{asset_ext}"
+                # Export chunk payload
+                out_chunk_name = f"{asset.category}_{stored_path.stem}_chunk_{i}{asset_ext}"
                 with open(asset_dir / out_chunk_name, "wb") as f:
-                    f.write(chunk.payload)
+                    self.bs.seek(chunk.payload_off)
+                    f.write(self.bs.read(chunk.payload_size))
 
                 chunk_id = chunk.child_id
                 i += 1
+        
+        # Export unused chunks
+        for chunk_id in self.chunk_map.keys():
+            if chunk_id in written_chunk_ids:
+                continue
+            
+            chunk_dir = out_dir / "Unused Chunks"
+            os.makedirs(chunk_dir, exist_ok=True)
+            with open(chunk_dir / str(chunk_id), "wb") as f:
+                chunk = self.chunk_map[chunk_id]
+                self.bs.seek(chunk.payload_off)
+                f.write(self.bs.read(chunk.payload_size))
 
 def main():
     parser = argparse.ArgumentParser()
@@ -196,7 +235,9 @@ def main():
     reader = ArchiveReader()
     with open(in_path, "rb") as f:
         reader.load_archive(archive_name, zlib.decompress(f.read()))
-    reader.extract_assets(out_dir)
+
+    reader.export_assets(out_dir)
+    reader.export_manifest(out_dir)
 
 
 if __name__ == "__main__":

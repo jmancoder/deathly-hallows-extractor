@@ -64,7 +64,7 @@ class ArchiveReader:
     def read_uint32(self) -> int:
         return struct.unpack("<I", self.bs.read(4))[0]
 
-    def read_entry_payload(self, entry: ArchiveEntry) -> None:
+    def cache_entry(self, entry: ArchiveEntry) -> None:
         header_off = self.bs.tell()
         self.bs.seek(entry.header_size, 1)
         
@@ -74,24 +74,35 @@ class ArchiveReader:
         padding = (((entry.payload_size + 15) // 16) * 16) - entry.payload_size
         self.bs.seek(padding, 1)
 
-        entry_category, entry_path = entry.string.split(":")
-        if entry_category == self.archive_name:
-            self.chunk_map[int(entry_path)] = Chunk(
+        if ":" in entry.string:
+            entry_category, entry_path = entry.string.split(":")
+            if entry_category == self.archive_name:
+                # Cache Deathly Hallows 1 chunk
+                self.chunk_map[int(entry_path)] = Chunk(
+                    header_off,
+                    entry.header_size,
+                    payload_off,
+                    entry.payload_size,
+                    entry.child_chunk_id
+                )
+            else:
+                # Cache asset descriptor
+                self.assets.append(Asset(
+                    payload_off,
+                    entry.payload_size,
+                    entry_category,
+                    entry_path,
+                    entry.child_chunk_id,
+                ))
+        else:
+            # Cache Deathly Hallows 2 chunk
+            self.chunk_map[int(entry.string)] = Chunk(
                 header_off,
                 entry.header_size,
                 payload_off,
                 entry.payload_size,
                 entry.child_chunk_id
             )
-        else:
-            self.assets.append(Asset(
-                payload_off,
-                entry.payload_size,
-                entry_category,
-                entry_path,
-                entry.child_chunk_id,
-            ))
-
 
     def load_archive(self, name: str, data: bytes) -> None:
         self.bs = BytesIO(data)
@@ -125,10 +136,15 @@ class ArchiveReader:
             chunk_string_id = self.read_int32()
             if chunk_string_id >= 0:
                 chunk_string = self.string_map[chunk_string_id]
-                chunk_category, chunk_id_string = chunk_string.split(":")
-                if chunk_category != self.archive_name:
-                    raise ValueError("Non-chunk child entries are not supported")
-                child_chunk_id = int(chunk_id_string)
+                if ":" in chunk_string:
+                    # Get Death Hallows 1 chunk ID
+                    chunk_category, chunk_id_string = chunk_string.split(":")
+                    if chunk_category != self.archive_name:
+                        raise ValueError("Non-chunk child entries are not supported")
+                    child_chunk_id = int(chunk_id_string)
+                else:
+                    # Get Death Hallows 2 chunk ID
+                    child_chunk_id = int(chunk_string)
             else:
                 child_chunk_id = -1
 
@@ -142,22 +158,21 @@ class ArchiveReader:
         for entry in self.entries:
             self.bs.seek(entry.unk_id_count * 4, 1)
         
-        # Read internal payloads
+        # Cache internal entries
         external_entries = []
         for entry in self.entries:
             if entry.is_external:
                 external_entries.append(entry)
             else:
-                self.read_entry_payload(entry)
+                self.cache_entry(entry)
         
-        # Read external payloads
+        # Cache external entries
         for entry in external_entries:
-            self.read_entry_payload(entry)
-
+            self.cache_entry(entry)
 
     def export_manifest(self, out_dir: Path) -> None:
         manifest: dict = {}
-        manifest["string_map"] = self.string_map
+        manifest["strings"] = self.string_map
         manifest["properties"] = self.property_strings
         manifest["assets"] = self.assets
         manifest["chunks"] = self.chunk_map
@@ -165,9 +180,8 @@ class ArchiveReader:
         with open(out_dir / f"manifest.json", "w") as f:
             json.dump(manifest, f, indent=4)
 
-
     def export_assets(self, out_dir: Path) -> None:
-        written_chunk_ids: list[int] = []
+        exported_chunk_ids: list[int] = []
         for asset in self.assets:
             stored_path = Path(asset.path)
             asset_ext = "".join(stored_path.suffixes)
@@ -185,7 +199,7 @@ class ArchiveReader:
             chunk_id = asset.chunk_id
             while chunk_id != -1:
                 chunk = self.chunk_map[chunk_id]
-                written_chunk_ids.append(chunk_id)
+                exported_chunk_ids.append(chunk_id)
                 
                 # Export chunk header if present
                 if chunk.header_size > 0:
@@ -206,15 +220,16 @@ class ArchiveReader:
         
         # Export unused chunks
         for chunk_id in self.chunk_map.keys():
-            if chunk_id in written_chunk_ids:
+            if chunk_id in exported_chunk_ids:
                 continue
             
-            chunk_dir = out_dir / "Unused Chunks"
+            chunk_dir = out_dir / "unused_chunks"
             os.makedirs(chunk_dir, exist_ok=True)
             with open(chunk_dir / str(chunk_id), "wb") as f:
                 chunk = self.chunk_map[chunk_id]
                 self.bs.seek(chunk.payload_off)
                 f.write(self.bs.read(chunk.payload_size))
+
 
 def main():
     parser = argparse.ArgumentParser()

@@ -1,12 +1,11 @@
 import argparse
+from io import BytesIO
 import json
 import os
-import struct
-import zlib
-
-from io import BytesIO
 from pathlib import Path
+import struct
 from typing import NamedTuple
+import zlib
 
 
 class ArchiveEntry(NamedTuple):
@@ -47,7 +46,7 @@ class ArchiveReader:
         self.entries: list[ArchiveEntry] = []
         self.assets: list[Asset] = []
         self.chunk_map: dict[int, Chunk] = {}
-    
+
     def read_string(self, offset_limit: int) -> str:
         out_chars = []
         while self.bs.tell() < offset_limit:
@@ -67,7 +66,7 @@ class ArchiveReader:
     def cache_entry(self, entry: ArchiveEntry) -> None:
         header_off = self.bs.tell()
         self.bs.seek(entry.header_size, 1)
-        
+
         payload_off = self.bs.tell()
         self.bs.seek(entry.payload_size, 1)
 
@@ -83,17 +82,19 @@ class ArchiveReader:
                     entry.header_size,
                     payload_off,
                     entry.payload_size,
-                    entry.child_chunk_id
+                    entry.child_chunk_id,
                 )
             else:
                 # Cache asset descriptor
-                self.assets.append(Asset(
-                    payload_off,
-                    entry.payload_size,
-                    entry_category,
-                    entry_path,
-                    entry.child_chunk_id,
-                ))
+                self.assets.append(
+                    Asset(
+                        payload_off,
+                        entry.payload_size,
+                        entry_category,
+                        entry_path,
+                        entry.child_chunk_id,
+                    )
+                )
         else:
             # Cache Deathly Hallows 2 chunk
             self.chunk_map[int(entry.string)] = Chunk(
@@ -101,13 +102,13 @@ class ArchiveReader:
                 entry.header_size,
                 payload_off,
                 entry.payload_size,
-                entry.child_chunk_id
+                entry.child_chunk_id,
             )
 
     def load_archive(self, name: str, data: bytes) -> None:
         self.bs = BytesIO(data)
         self.archive_name = name
-        
+
         # Read global string table
         string_block_end = self.read_uint32() + 4
         string_count = self.read_uint32()
@@ -115,12 +116,11 @@ class ArchiveReader:
             string_id = self.read_uint32()
             self.string_map[string_id] = self.read_string(string_block_end)
         self.bs.seek(string_block_end)
-    
+
         # Read property strings by ID
         property_count = self.read_uint32()
         self.property_strings = [
-            self.string_map[self.read_uint32()]
-            for _ in range(property_count)
+            self.string_map[self.read_uint32()] for _ in range(property_count)
         ]
 
         # Read entries
@@ -148,16 +148,18 @@ class ArchiveReader:
             else:
                 child_chunk_id = -1
 
-            self.entries.append(ArchiveEntry(
-                entry_string,
-                child_chunk_id,
-                *struct.unpack("<8i", self.bs.read(32))
-            ))
+            self.entries.append(
+                ArchiveEntry(
+                    entry_string,
+                    child_chunk_id,
+                    *struct.unpack("<8i", self.bs.read(32)),
+                )
+            )
 
         # Skip unknown integer groups
         for entry in self.entries:
             self.bs.seek(entry.unk_id_count * 4, 1)
-        
+
         # Cache internal entries
         external_entries = []
         for entry in self.entries:
@@ -165,7 +167,7 @@ class ArchiveReader:
                 external_entries.append(entry)
             else:
                 self.cache_entry(entry)
-        
+
         # Cache external entries
         for entry in external_entries:
             self.cache_entry(entry)
@@ -190,7 +192,9 @@ class ArchiveReader:
 
             # Export inital payload if present
             if asset.payload_size > 0:
-                out_info_name = f"{asset.category}_{stored_path.stem}_initial{asset_ext}"
+                out_info_name = (
+                    f"{asset.category}_{stored_path.stem}_initial{asset_ext}"
+                )
                 with open(asset_dir / out_info_name, "wb") as f:
                     self.bs.seek(asset.payload_off)
                     f.write(self.bs.read(asset.payload_size))
@@ -200,29 +204,33 @@ class ArchiveReader:
             while chunk_id != -1:
                 chunk = self.chunk_map[chunk_id]
                 exported_chunk_ids.append(chunk_id)
-                
+
                 # Export chunk header if present
                 if chunk.header_size > 0:
-                    out_chunk_header_name = f"{asset.category}_" \
+                    out_chunk_header_name = (
+                        f"{asset.category}_"
                         f"{stored_path.stem}_chunk_{i}_header{asset_ext}"
+                    )
                     with open(asset_dir / out_chunk_header_name, "wb") as f:
                         self.bs.seek(chunk.header_off)
                         f.write(self.bs.read(chunk.header_size))
 
                 # Export chunk payload
-                out_chunk_name = f"{asset.category}_{stored_path.stem}_chunk_{i}{asset_ext}"
+                out_chunk_name = (
+                    f"{asset.category}_{stored_path.stem}_chunk_{i}{asset_ext}"
+                )
                 with open(asset_dir / out_chunk_name, "wb") as f:
                     self.bs.seek(chunk.payload_off)
                     f.write(self.bs.read(chunk.payload_size))
 
                 chunk_id = chunk.child_id
                 i += 1
-        
+
         # Export unused chunks
         for chunk_id in self.chunk_map.keys():
             if chunk_id in exported_chunk_ids:
                 continue
-            
+
             chunk_dir = out_dir / "unused_chunks"
             os.makedirs(chunk_dir, exist_ok=True)
             with open(chunk_dir / str(chunk_id), "wb") as f:
@@ -233,10 +241,12 @@ class ArchiveReader:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("in_path", type=Path,
-        help="path to the .bin.gz archive to extract")
-    parser.add_argument("out_dir", type=Path,
-        help="path to a folder to extract the archive into")
+    parser.add_argument(
+        "in_path", type=Path, help="path to the .bin.gz archive to extract"
+    )
+    parser.add_argument(
+        "out_dir", type=Path, help="path to a folder to extract the archive into"
+    )
     args = parser.parse_args()
 
     # Create output folder

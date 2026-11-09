@@ -120,11 +120,17 @@ class ArchiveExtractor:
             if merge_chunks and chunk.parent_id != -1:
                 continue
 
-            # Create path and subfolders
-            category, path = self.string_map[chunk_id].split(":")
+            # Decompose chunk name
+            name = self.string_map[chunk_id]
+            if ":" in name:
+                category, path = name.split(":")
+            else:
+                category = self.archive_name
+                path = name
             if category == self.archive_name:
                 out_path = out_dir / path
             else:
+                # Create subfolders in path
                 out_path = out_dir / Path(path)
                 os.makedirs(out_path.parent, exist_ok=True)
 

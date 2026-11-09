@@ -114,40 +114,57 @@ class ArchiveExtractor:
             if chunk.child_id > -1:
                 self.chunk_map[chunk.child_id].parent_id = chunk_id
 
-    def export_assets(self, out_dir: Path) -> None:
-        for asset_id, asset_chunk in self.chunk_map.items():
-            if asset_chunk.parent_id != -1:
+    def export_assets(self, out_dir: Path, merge_chunks: bool) -> None:
+        for chunk_id, chunk in self.chunk_map.items():
+            # If merging chunks, only create files for root assets
+            if merge_chunks and chunk.parent_id != -1:
                 continue
 
             # Create path and subfolders
-            category, asset_path = self.string_map[asset_id].split(":")
+            category, path = self.string_map[chunk_id].split(":")
             if category == self.archive_name:
-                out_path = out_dir / asset_path
+                out_path = out_dir / path
             else:
-                out_path = out_dir / Path(asset_path)
+                out_path = out_dir / Path(path)
                 os.makedirs(out_path.parent, exist_ok=True)
 
             with open(out_path, "wb") as f:
-                # Write root chunk, except on textures where it is a redundant header
-                if category != "TEX":
-                    self.bs.seek(asset_chunk.payload_off)
-                    f.write(self.bs.read(asset_chunk.payload_size))
+                # Write chunk, except on textures where it is a redundant header
+                if (not merge_chunks) or (merge_chunks and category != "TEX"):
+                    self.bs.seek(chunk.payload_off)
+                    f.write(self.bs.read(chunk.payload_size))
 
-                if asset_chunk.child_id > -1:
-                    # Write child chunks
-                    chunk = self.chunk_map[asset_chunk.child_id]
+                # Write child chunks
+                if merge_chunks and chunk.child_id > -1:
+                    child_chunk = self.chunk_map[chunk.child_id]
                     while True:
-                        self.bs.seek(chunk.payload_off)
-                        f.write(self.bs.read(chunk.payload_size))
+                        self.bs.seek(child_chunk.payload_off)
+                        f.write(self.bs.read(child_chunk.payload_size))
 
-                        if chunk.child_id > -1:
-                            chunk = self.chunk_map[chunk.child_id]
+                        if child_chunk.child_id > -1:
+                            child_chunk = self.chunk_map[child_chunk.child_id]
                         else:
                             break
 
-    def export_string_map(self, out_dir: Path) -> None:
-        with open(out_dir / "strings.json", "wt") as f:
-            json.dump(self.string_map, f, indent=4)
+    def export_manifest(self, out_dir: Path) -> None:
+        json_chunks: list[dict] = []
+        for chunk_id, chunk in self.chunk_map.items():
+            json_chunk = {}
+            json_chunk["name"] = self.string_map[chunk_id]
+            json_chunk["parent_name"] = (
+                self.string_map[chunk.parent_id] if chunk.parent_id > -1 else None
+            )
+            json_chunk["child_name"] = (
+                self.string_map[chunk.child_id] if chunk.child_id > -1 else None
+            )
+            json_chunk["header_offset"] = chunk.header_off
+            json_chunk["header_size"] = chunk.header_size
+            json_chunk["payload_offset"] = chunk.payload_off
+            json_chunk["payload_size"] = chunk.payload_size
+            json_chunks.append(json_chunk)
+
+        with open(out_dir / "manifest.json", "wt") as f:
+            json.dump({"strings": self.string_map, "chunks": json_chunks}, f, indent=4)
 
 
 def main() -> None:
@@ -157,6 +174,12 @@ def main() -> None:
     )
     parser.add_argument(
         "out_dir", type=Path, help="path to a folder to extract the archive into"
+    )
+    parser.add_argument(
+        "-s",
+        "--split-chunks",
+        action="store_true",
+        help="avoids merging child and parent chunks",
     )
     args = parser.parse_args()
 
@@ -170,8 +193,8 @@ def main() -> None:
     extractor = ArchiveExtractor()
     with open(in_path, "rb") as f:
         extractor.load_archive(archive_name, zlib.decompress(f.read()))
-    extractor.export_assets(out_dir)
-    extractor.export_string_map(out_dir)
+    extractor.export_assets(out_dir, not args.split_chunks)
+    extractor.export_manifest(out_dir)
 
 
 if __name__ == "__main__":

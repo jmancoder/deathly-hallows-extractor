@@ -153,24 +153,23 @@ class ArchiveExtractor:
                             break
 
     def export_manifest(self, out_dir: Path) -> None:
-        json_chunks: list[dict] = []
-        for chunk_id, chunk in self.chunk_map.items():
-            json_chunk = {}
-            json_chunk["name"] = self.string_map[chunk_id]
-            json_chunk["parent_name"] = (
-                self.string_map[chunk.parent_id] if chunk.parent_id > -1 else None
-            )
-            json_chunk["child_name"] = (
-                self.string_map[chunk.child_id] if chunk.child_id > -1 else None
-            )
-            json_chunk["header_offset"] = chunk.header_off
-            json_chunk["header_size"] = chunk.header_size
-            json_chunk["payload_offset"] = chunk.payload_off
-            json_chunk["payload_size"] = chunk.payload_size
-            json_chunks.append(json_chunk)
+        json_entry_map: dict[int, dict] = {}
+        for entry in self.entries:
+            json_entry = {}
+            json_entry["child_id"] = entry.child_id
+            json_entry["payload_size"] = entry.payload_size
+            json_entry["flags"] = entry.flags
+            json_entry["header_size"] = entry.header_size
+            json_entry["is_external"] = entry.is_external
+            json_entry["unk_int_count"] = entry.unk_int_count
+            json_entry["unk_0"] = entry.unk_0
+            json_entry["unk_1"] = entry.unk_1
+            json_entry["unk_2"] = entry.unk_2
+            json_entry_map[entry.name_id] = json_entry
 
         with open(out_dir / "manifest.json", "wt") as f:
-            json.dump({"strings": self.string_map, "chunks": json_chunks}, f, indent=4)
+            manifest = {"strings": self.string_map, "chunks": json_entry_map}
+            json.dump(manifest, f, indent=4)
 
 
 def main() -> None:

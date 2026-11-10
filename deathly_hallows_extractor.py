@@ -181,10 +181,10 @@ def main() -> None:
         "out_dir", type=Path, help="path to a folder to extract the archive into"
     )
     parser.add_argument(
-        "-s",
-        "--split-chunks",
+        "-m",
+        "--merge-chunks",
         action="store_true",
-        help="avoids merging child and parent chunks",
+        help="merge child and parent chunks to aid analysis",
     )
     args = parser.parse_args()
 
@@ -198,7 +198,7 @@ def main() -> None:
     extractor = ArchiveExtractor()
     with open(in_path, "rb") as f:
         extractor.load_archive(archive_name, zlib.decompress(f.read()))
-    extractor.export_assets(out_dir, not args.split_chunks)
+    extractor.export_assets(out_dir, args.merge_chunks)
     extractor.export_manifest(out_dir)
 
 

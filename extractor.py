@@ -39,6 +39,7 @@ class ArchiveExtractor:
         self.string_map: dict[int, str] = {}
         self.property_ids: list[int] = []
         self.entries: list[Entry] = []
+        self.unk_int_groups: list[list[int]] = []
         self.chunk_map: dict[int, Chunk] = {}
 
     def read_string(self, offset_limit: int) -> str:
@@ -127,7 +128,12 @@ class ArchiveExtractor:
             json_entry_map[entry.name_id] = json_entry
 
         with open(out_dir / "manifest.json", "wt") as f:
-            manifest = {"strings": self.string_map, "chunks": json_entry_map}
+            manifest = {
+                "strings": self.string_map,
+                "chunks": json_entry_map,
+                "property_ids": self.property_ids,
+                "unk_int_groups": self.unk_int_groups,
+            }
             json.dump(manifest, f, indent=4)
 
     def read_archive(self, name: str, data: bytes) -> None:
@@ -151,9 +157,11 @@ class ArchiveExtractor:
         for _ in range(entry_count):
             self.entries.append(Entry(*struct.unpack("<10i", self.bs.read(40))))
 
-        # Skip unknown int groups
+        # Read unknown int groups
         for entry in self.entries:
-            self.bs.seek(entry.unk_int_count * 4, 1)
+            self.unk_int_groups.append(
+                [self.read_int32() for _ in range(entry.unk_int_count)]
+            )
 
         # Skip entry payloads and store offsets in chunk map
         external_entries = []

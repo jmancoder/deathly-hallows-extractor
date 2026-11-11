@@ -1,6 +1,6 @@
 import argparse
 from dataclasses import dataclass
-from io import BytesIO
+from io import BytesIO, StringIO
 import json
 import os
 from pathlib import Path
@@ -42,20 +42,20 @@ class ArchiveExtractor:
         self.chunk_map: dict[int, Chunk] = {}
 
     def read_string(self, offset_limit: int) -> str:
-        out_chars = []
+        out_str = StringIO()
         while self.bs.tell() < offset_limit:
             c = self.bs.read(1)[0]
             if c == 0:
                 break
             else:
-                out_chars.append(chr(c))
-        return "".join(out_chars)
+                out_str.write(chr(c))
+        return out_str.getvalue()
 
     def read_int32(self) -> int:
-        return struct.unpack("<i", self.bs.read(4))[0]
+        return int.from_bytes(self.bs.read(4), "little", signed=True)
 
     def read_uint32(self) -> int:
-        return struct.unpack("<I", self.bs.read(4))[0]
+        return int.from_bytes(self.bs.read(4), "little")
 
     def skip_and_add_chunk(self, entry: Entry) -> None:
         header_off = self.bs.tell()
@@ -73,46 +73,6 @@ class ArchiveExtractor:
             payload_off,
             entry.payload_size,
         )
-
-    def load_archive(self, name: str, data: bytes) -> None:
-        self.bs = BytesIO(data)
-        self.archive_name = name
-
-        # Read global string table
-        string_block_end = self.read_uint32() + 4
-        string_count = self.read_uint32()
-        for _ in range(string_count):
-            string_id = self.read_uint32()
-            self.string_map[string_id] = self.read_string(string_block_end)
-        self.bs.seek(string_block_end)
-
-        # Read property IDs
-        property_count = self.read_uint32()
-        self.property_ids = [self.read_uint32() for _ in range(property_count)]
-
-        # Read entries
-        entry_count = self.read_uint32()
-        for _ in range(entry_count):
-            self.entries.append(Entry(*struct.unpack("<10i", self.bs.read(40))))
-
-        # Skip unknown int groups
-        for entry in self.entries:
-            self.bs.seek(entry.unk_int_count * 4, 1)
-
-        # Skip entry payloads and store offsets in chunk map
-        external_entries = []
-        for entry in self.entries:
-            if entry.is_external:
-                external_entries.append(entry)
-            else:
-                self.skip_and_add_chunk(entry)
-        for entry in external_entries:
-            self.skip_and_add_chunk(entry)
-
-        # Update chunk parent IDs
-        for chunk_id, chunk in self.chunk_map.items():
-            if chunk.child_id > -1:
-                self.chunk_map[chunk.child_id].parent_id = chunk_id
 
     def export_assets(self, out_dir: Path, merge_chunks: bool) -> None:
         for chunk_id, chunk in self.chunk_map.items():
@@ -170,6 +130,46 @@ class ArchiveExtractor:
             manifest = {"strings": self.string_map, "chunks": json_entry_map}
             json.dump(manifest, f, indent=4)
 
+    def read_archive(self, name: str, data: bytes) -> None:
+        self.bs = BytesIO(data)
+        self.archive_name = name
+
+        # Read global string table
+        string_block_end = self.read_uint32() + 4
+        string_count = self.read_uint32()
+        for _ in range(string_count):
+            string_id = self.read_uint32()
+            self.string_map[string_id] = self.read_string(string_block_end)
+        self.bs.seek(string_block_end)
+
+        # Read property IDs
+        property_count = self.read_uint32()
+        self.property_ids = [self.read_uint32() for _ in range(property_count)]
+
+        # Read entries
+        entry_count = self.read_uint32()
+        for _ in range(entry_count):
+            self.entries.append(Entry(*struct.unpack("<10i", self.bs.read(40))))
+
+        # Skip unknown int groups
+        for entry in self.entries:
+            self.bs.seek(entry.unk_int_count * 4, 1)
+
+        # Skip entry payloads and store offsets in chunk map
+        external_entries = []
+        for entry in self.entries:
+            if entry.is_external:
+                external_entries.append(entry)
+            else:
+                self.skip_and_add_chunk(entry)
+        for entry in external_entries:
+            self.skip_and_add_chunk(entry)
+
+        # Update chunk parent IDs
+        for chunk_id, chunk in self.chunk_map.items():
+            if chunk.child_id > -1:
+                self.chunk_map[chunk.child_id].parent_id = chunk_id
+
 
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -196,7 +196,7 @@ def main() -> None:
     # Read and extract assets from the archive
     extractor = ArchiveExtractor()
     with open(in_path, "rb") as f:
-        extractor.load_archive(archive_name, zlib.decompress(f.read()))
+        extractor.read_archive(archive_name, zlib.decompress(f.read()))
     extractor.export_assets(out_dir, args.merge_chunks)
     extractor.export_manifest(out_dir)
 

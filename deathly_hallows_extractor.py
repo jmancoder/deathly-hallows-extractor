@@ -135,10 +135,9 @@ class ArchiveExtractor:
                 os.makedirs(out_path.parent, exist_ok=True)
 
             with open(out_path, "wb") as f:
-                # Write chunk, except on textures where it is a redundant header
-                if (not merge_chunks) or (merge_chunks and category != "TEX"):
-                    self.bs.seek(chunk.payload_off)
-                    f.write(self.bs.read(chunk.payload_size))
+                # Write root chunk
+                self.bs.seek(chunk.payload_off)
+                f.write(self.bs.read(chunk.payload_size))
 
                 # Write child chunks
                 if merge_chunks and chunk.child_id > -1:

@@ -22,16 +22,6 @@ class Entry:
     unk_2: int
 
 
-@dataclass(slots=True)
-class Chunk:
-    parent_id: int
-    child_id: int
-    header_off: int
-    header_size: int
-    payload_off: int
-    payload_size: int
-
-
 class ArchiveExtractor:
     def __init__(self) -> None:
         self.bs: BytesIO
@@ -40,7 +30,6 @@ class ArchiveExtractor:
         self.property_ids: list[int] = []
         self.entries: list[Entry] = []
         self.unk_int_groups: list[list[int]] = []
-        self.chunk_map: dict[int, Chunk] = {}
 
     def read_string(self, offset_limit: int) -> str:
         out_str = StringIO()
@@ -58,59 +47,37 @@ class ArchiveExtractor:
     def read_uint32(self) -> int:
         return int.from_bytes(self.bs.read(4), "little")
 
-    def skip_and_add_chunk(self, entry: Entry) -> None:
-        header_off = self.bs.tell()
-        self.bs.seek(entry.header_size, 1)
-        payload_off = self.bs.tell()
-        self.bs.seek(entry.payload_size, 1)
-        padding = (((entry.payload_size + 15) // 16) * 16) - entry.payload_size
-        self.bs.seek(padding, 1)
+    def _export_asset(self, entry: Entry, out_dir: Path):
+        name = self.string_map[entry.name_id]
+        if ":" in name:
+            category, path = name.split(":")
+        else:
+            category = self.archive_name
+            path = name
+        if category == self.archive_name:
+            out_path = out_dir / path
+        else:
+            # Create subfolders in path
+            out_path = out_dir / Path(path)
+            os.makedirs(out_path.parent, exist_ok=True)
 
-        self.chunk_map[entry.name_id] = Chunk(
-            -1,
-            entry.child_id,
-            header_off,
-            entry.header_size,
-            payload_off,
-            entry.payload_size,
-        )
+        # Export header and aligned payload
+        with open(out_path, "wb") as f:
+            f.write(self.bs.read(entry.header_size))
+            f.write(self.bs.read(entry.payload_size))
+            self.bs.seek(
+                (((entry.payload_size + 15) // 16) * 16) - entry.payload_size, 1
+            )
 
-    def export_assets(self, out_dir: Path, merge_chunks: bool) -> None:
-        for chunk_id, chunk in self.chunk_map.items():
-            # If merging chunks, only create files for root assets
-            if merge_chunks and chunk.parent_id != -1:
+    def export_assets(self, out_dir: Path) -> None:
+        external_entries: list[Entry] = []
+        for entry in self.entries:
+            if entry.is_external:
+                external_entries.append(entry)
                 continue
-
-            # Decompose chunk name
-            name = self.string_map[chunk_id]
-            if ":" in name:
-                category, path = name.split(":")
-            else:
-                category = self.archive_name
-                path = name
-            if category == self.archive_name:
-                out_path = out_dir / path
-            else:
-                # Create subfolders in path
-                out_path = out_dir / Path(path)
-                os.makedirs(out_path.parent, exist_ok=True)
-
-            with open(out_path, "wb") as f:
-                # Write root chunk
-                self.bs.seek(chunk.payload_off)
-                f.write(self.bs.read(chunk.payload_size))
-
-                # Write child chunks
-                if merge_chunks and chunk.child_id > -1:
-                    child_chunk = self.chunk_map[chunk.child_id]
-                    while True:
-                        self.bs.seek(child_chunk.payload_off)
-                        f.write(self.bs.read(child_chunk.payload_size))
-
-                        if child_chunk.child_id > -1:
-                            child_chunk = self.chunk_map[child_chunk.child_id]
-                        else:
-                            break
+            self._export_asset(entry, out_dir)
+        for entry in external_entries:
+            self._export_asset(entry, out_dir)
 
     def export_manifest(self, out_dir: Path) -> None:
         json_entry_map: dict[int, dict] = {}
@@ -136,7 +103,7 @@ class ArchiveExtractor:
             }
             json.dump(manifest, f, indent=4)
 
-    def read_archive(self, name: str, data: bytes) -> None:
+    def load_archive(self, name: str, data: bytes) -> None:
         self.bs = BytesIO(data)
         self.archive_name = name
 
@@ -163,21 +130,6 @@ class ArchiveExtractor:
                 [self.read_int32() for _ in range(entry.unk_int_count)]
             )
 
-        # Skip entry payloads and store offsets in chunk map
-        external_entries = []
-        for entry in self.entries:
-            if entry.is_external:
-                external_entries.append(entry)
-            else:
-                self.skip_and_add_chunk(entry)
-        for entry in external_entries:
-            self.skip_and_add_chunk(entry)
-
-        # Update chunk parent IDs
-        for chunk_id, chunk in self.chunk_map.items():
-            if chunk.child_id > -1:
-                self.chunk_map[chunk.child_id].parent_id = chunk_id
-
 
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -186,12 +138,6 @@ def main() -> None:
     )
     parser.add_argument(
         "out_dir", type=Path, help="path to a folder to extract the archive into"
-    )
-    parser.add_argument(
-        "-m",
-        "--merge-chunks",
-        action="store_true",
-        help="merge child and parent chunks to aid analysis",
     )
     args = parser.parse_args()
 
@@ -204,8 +150,8 @@ def main() -> None:
     # Read and extract assets from the archive
     extractor = ArchiveExtractor()
     with open(in_path, "rb") as f:
-        extractor.read_archive(archive_name, zlib.decompress(f.read()))
-    extractor.export_assets(out_dir, args.merge_chunks)
+        extractor.load_archive(archive_name, zlib.decompress(f.read()))
+    extractor.export_assets(out_dir)
     extractor.export_manifest(out_dir)
 
 

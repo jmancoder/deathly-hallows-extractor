@@ -54,11 +54,12 @@ class ArchiveExtractor:
         else:
             category = self.archive_name
             path = name
+
         if category == self.archive_name:
             out_path = out_dir / path
         else:
-            # Create subfolders in path
-            out_path = out_dir / Path(path)
+            # Create subfolders and add category as extension
+            out_path = out_dir / f"{path}.{category}"
             os.makedirs(out_path.parent, exist_ok=True)
 
         # Export header and aligned payload
